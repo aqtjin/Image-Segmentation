@@ -114,5 +114,4 @@ def image_dequeue_as_stream():
     queue = DB.xread({settings.IMAGE_STREAMING: b"0-0"},
                      block=0,
                      count=10)
-
     return queue

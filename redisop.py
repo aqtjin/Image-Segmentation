@@ -65,24 +65,20 @@ def dequeue():
     return decoded
 
 
-def image_enqueue(image_path):
-    with open(image_path, "rb") as imageFile:
-        # generate an ID for the classification then add the
-        # classification ID + image to the queue
-        k = str(uuid.uuid4())
-        image = helper.base64_encode_image(imageFile.read())
-        d = {"id": k, "path": image_path, "image": image}
-        DB.rpush(settings.IMAGE_QUEUE, json.dumps(d))
+def enqueue(pool, payload):
+    r = redis.Redis(connection_pool=pool)
+    r.rpush(settings.PREDICT_QUEUE, payload)
 
 
-def image_enqueue_as_stream(image_path):
+def image_enqueue_as_stream(image_path, pool):
     with open(image_path, "rb") as imageFile:
         # generate an ID for the classification then add the
         # classification ID + image to the queue
         k = str(uuid.uuid4())
         image = helper.base64_encode_image(imageFile.read())
         d = {"id": str(k), "path": image_path, "image": image}
-        DB.xadd(settings.IMAGE_STREAMING, d)
+        r = redis.Redis(connection_pool=pool)
+        r.xadd(settings.IMAGE_STREAMING, d)
 
 
 def image_dequeue():
@@ -113,6 +109,6 @@ def image_dequeue():
 def image_dequeue_as_stream():
     queue = DB.xread({settings.IMAGE_STREAMING: b"0-0"},
                      block=0,
-                     count=10)
+                     count=1)
 
     return queue

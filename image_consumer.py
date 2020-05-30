@@ -7,6 +7,8 @@ from redisop import *
 import redis
 import argparse
 from zoo.common.nncontext import *
+from visualize import *
+import time
 
 
 DB = redis.StrictRedis(host=settings.REDIS_HOST,
@@ -14,6 +16,7 @@ DB = redis.StrictRedis(host=settings.REDIS_HOST,
 
 
 def process_batch(stream_batch, batch_id):
+    t_1 = time.time()
     stream_batch = stream_batch.collect()
     image_set = []
     image_ids = []
@@ -27,9 +30,17 @@ def process_batch(stream_batch, batch_id):
 
         # update the list of image IDs
         image_ids.append(q["id"])
-    result = list(map(lambda x: model.predict(x), image_set))
+
+    def inference(image):
+        start = time.time()
+        model.predict(image)
+        end = time.time()
+        print("Inference time is " + str(end-start) + " ms")
+    result = list(map(inference, image_set))
     for i in range(len(result)):
-        print(result[i].shape)
+        enqueue(pool, str(result[i]))
+    t_2 = time.time()
+    print("Used time for Spark " + str(t_2-t_1) + " ms")
     # rdd = ssc.sparkContext.parallelize(image_queue[0][1])
     #
     # images = rdd.map(process_queue).collect()
@@ -51,18 +62,32 @@ if __name__ == "__main__":
     parser.add_argument('--weight_path', help="weight_path")
     args = parser.parse_args()
 
-    sc = init_spark_on_local()
-    ssc = StreamingContext(sc, 3)
+    # sc = init_spark_on_local()
+    sc = init_spark_on_yarn(
+        hadoop_conf="/opt/work/hadoop-2.7.2/etc/hadoop",
+        conda_name="han",
+        num_executor=2,
+        executor_cores=10,
+        executor_memory="100g",
+        driver_memory="10g",
+        driver_cores=4,
+        extra_python_lib="/opt/work/client/pycharm_project_895/load_model.py, /opt/work/client/pycharm_project_895/redisop.py, /opt/work/client/pycharm_project_895/helper.py, /opt/work/client/pycharm_project_895/settings",
+        jars="/opt/work/client/han/analytics-zoo-bigdl_0.10.0-spark_2.4.3-0.8.0-jar-with-dependencies.jar,/opt/work/client/han/spark-redis/target/spark-redis_2.11-2.4.3-SNAPSHOT-jar-with-dependencies.jar",
+        spark_conf={"spark.redis.host": "172.16.0.120", "spark.redis.port": "6379"}
+    )
+    redis_host = sc._conf.get("spark.redis.host")
+    redis_port = int(sc._conf.get("spark.redis.port"))
+    pool = create_redis_pool(redis_host, redis_port, '0')
 
     spark = SparkSession \
         .builder \
         .appName("Streaming Image Consumer") \
-        .config("spark.redis.host", settings.REDIS_HOST) \
-        .config("spark.redis.port", settings.REDIS_PORT) \
         .getOrCreate()
 
     # Streaming schema
     imageSchema = StructType().add("id", "string").add("path", "string").add("image", "string")
+    spark.sparkContext.addFile(args.model_path)
+    spark.sparkContext.addFile(args.weight_path)
     loadedDf = spark.readStream.format("redis") \
         .option("stream.keys", settings.IMAGE_STREAMING) \
         .option("stream.read.batch.size", settings.BATCH_SIZE) \
@@ -73,15 +98,4 @@ if __name__ == "__main__":
         .foreachBatch(process_batch).start()
 
     query.awaitTermination()
-    # model = load_model(args.model_path,
-    #                    args.weight_path,
-    #                    1)
 
-    # Create the queue through which RDDs can be pushed to
-    # a QueueInputDStream
-
-    # process_rdd(queue)
-    #
-    # ssc.start()
-    #
-    # ssc.awaitTermination()
